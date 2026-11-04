@@ -1,0 +1,68 @@
+name: CI/CD Auth Service
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: "us-east-1"
+  ECR_REPOSITORY: "auth-service"
+  REGISTRY_URL: "640494160208.dkr.ecr.us-east-1.amazonaws.com"
+  GITOPS_REPO: "fiap-dclt/tech-challenge-phase-3-k8s"
+  MANIFEST_PATH: "auth-service/deployment.yml"
+
+jobs:
+  build-and-update-gitops:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout do Repositório de Código (Auth)
+        uses: actions/checkout@v4
+
+      - name: Autenticação na AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::640494160208:role/github-actions-ecr-role-prod
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login no Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, Tag e Push da Imagem
+        id: build-image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t ${{ env.REGISTRY_URL }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG .
+          docker push ${{ env.REGISTRY_URL }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
+          echo "new_image=${{ env.REGISTRY_URL }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      # Checkout do repositório de K8s usando um PAT (Personal Access Token)
+      - name: Checkout do Repositório GitOps (K8s)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          # Este PAT deve ser criado no GitHub e adicionado aos Secrets deste repositório
+          token: ${{ secrets.GITOPS_PAT }}
+          path: gitops-repo
+
+      - name: Atualizar tag no deployment.yml via sed
+        env:
+          NEW_IMAGE: ${{ steps.build-image.outputs.new_image }}
+        run: |
+          cd gitops-repo
+          sed -i "s|image: ${{ env.REGISTRY_URL }}/${{ env.ECR_REPOSITORY }}:.*|image: $NEW_IMAGE|g" ${{ env.MANIFEST_PATH }}
+
+      - name: Commit e Push para o repositório GitOps
+        run: |
+          cd gitops-repo
+          git config --global user.name "github-actions-bot"
+          git config --global user.email "bot@github.com"
+          git add ${{ env.MANIFEST_PATH }}
+          git commit -m "chore: deploy(auth-service) bump image to ${{ github.sha }}"
+          git push
