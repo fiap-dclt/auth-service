@@ -21,7 +21,7 @@ jobs:
 
     steps:
       - name: Checkout do Repositório de Código (Auth)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # - name: Debug OIDC Claims
       #   run: |
@@ -30,7 +30,7 @@ jobs:
       #     echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq '{sub: .sub, aud: .aud, repository_owner: .repository_owner}'
 
       - name: Autenticação na AWS (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v6.3
         with:
           role-to-assume: arn:aws:iam::640494160208:role/github-actions-ecr-role-prod
           aws-region: ${{ env.AWS_REGION }}
