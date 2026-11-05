@@ -71,4 +71,7 @@ jobs:
           git config --global user.email "bot@github.com"
           git add ${{ env.MANIFEST_PATH }}
           git commit -m "chore: deploy(auth-service) bump image to ${{ github.sha }}"
-          git push
+          git pull --rebase origin main
+          for i in {1..5}; do
+            git pull --rebase origin main && git push origin main && break || sleep 5
+          done
