@@ -4,8 +4,9 @@ on:
   push:
     branches:
       - main
-    paths-ignore:
-      - ".github/**"
+  pull_request:
+    branches:
+      - main
 
 env:
   AWS_REGION: "us-east-1"
@@ -15,65 +16,237 @@ env:
   MANIFEST_PATH: "auth-service/deployment.yml"
 
 jobs:
+  # ------------------------------------------------------------
+  # Job 1 - Linter (Go)
+  # Garante padronização e qualidade do código antes do deploy.
+  # gofmt verifica a formatação e golangci-lint executa análises
+  # estáticas; qualquer falha impede a continuação do pipeline.
+  # ------------------------------------------------------------
+  lint:
+    name: Linter (Go)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v7
+
+      - name: Set Up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check Go Formatting (gofmt)
+        shell: bash
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [[ -n "$unformatted" ]]; then
+            echo "Arquivos Go sem formatação:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.15.0
+          args: --timeout=5m
+
+  # ------------------------------------------------------------
+  # Job 2 - SCA (Trivy filesystem)
+  # Analisa os arquivos e manifestos de dependências do projeto
+  # para encontrar vulnerabilidades conhecidas em bibliotecas.
+  # Reprova vulnerabilidades HIGH/CRITICAL que tenham correção.
+  # ------------------------------------------------------------
+  sca-trivy:
+    name: SCA (Trivy filesystem)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v7
+
+      - name: Scan Dependencies with Trivy (Filesystem)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          vuln-type: library
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  # ------------------------------------------------------------
+  # Job 3 - SAST (Horusec)
+  # Inspeciona o código-fonte sem executar a aplicação, buscando
+  # padrões de insegurança. O parâmetro "-e true" faz a execução
+  # falhar caso o Horusec encontre vulnerabilidades.
+  # ------------------------------------------------------------
+  sast-horusec:
+    name: SAST (Horusec)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v7
+
+      - name: Run Horusec SAST Scan
+        shell: bash
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$GITHUB_WORKSPACE:/src" \
+            horuszup/horusec-cli:v2.8.0 \
+            horusec start -p /src -P "$GITHUB_WORKSPACE" -e true
+
+  # ------------------------------------------------------------
+  # Job 4 - Secret scanning (Gitleaks)
+  # Procura credenciais, tokens e outros segredos expostos no Git.
+  # O checkout usa fetch-depth: 0 para disponibilizar o histórico
+  # completo; --redact evita imprimir segredos detectados nos logs.
+  # ------------------------------------------------------------
+  secrets-gitleaks:
+    name: Secret scanning (Gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Source Code (Full History)
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Scan Git History for Secrets
+        shell: bash
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git --redact --verbose --log-opts="--all" /src
+
+  # ------------------------------------------------------------
+  # Job 5 - Build, scan de imagem, publicação e GitOps
+  # Só começa depois da aprovação dos quatro jobs anteriores.
+  # Compila a imagem Docker e executa Trivy em modo "image" para
+  # verificar vulnerabilidades do sistema operacional e bibliotecas.
+  # Em pull requests, termina após o scan: não faz deploy.
+  # Em push na main, publica no ECR e atualiza o manifesto GitOps.
+  # ------------------------------------------------------------
   build-and-update-gitops:
+    name: Build, scan de imagem, ECR e GitOps
+    needs:
+      - lint
+      - sca-trivy
+      - sast-horusec
+      - secrets-gitleaks
     runs-on: ubuntu-latest
     permissions:
       id-token: write
       contents: read
 
     steps:
-      - name: Checkout do Repositório de Código (Auth)
+      - name: Checkout Auth Service Repository
         uses: actions/checkout@v7
 
-      # - name: Debug OIDC Claims
-      #   run: |
-      #     TOKEN=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" -s | jq -r '.value')
-      #     echo "=== JWT Payload Claims ==="
-      #     echo "$TOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq '{sub: .sub, aud: .aud, repository_owner: .repository_owner}'
-
-      - name: Autenticação na AWS (OIDC)
-        uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: arn:aws:iam::640494160208:role/github-actions-ecr-role-prod
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login no Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, Tag e Push da Imagem
+      # O build e o scan da imagem rodam em push e pull request.
+      # O push para o ECR e o GitOps ficam restritos à branch main.
+      - name: Build and Tag Docker Image (Local)
         id: build-image
         env:
           IMAGE_TAG: ${{ github.sha }}
+        shell: bash
         run: |
-          docker build -t ${{ env.REGISTRY_URL }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG .
-          docker push ${{ env.REGISTRY_URL }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG
-          echo "new_image=${{ env.REGISTRY_URL }}/${{ env.ECR_REPOSITORY }}:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          NEW_IMAGE="${{ env.REGISTRY_URL }}/${{ env.ECR_REPOSITORY }}:${IMAGE_TAG}"
+          docker build -t "$NEW_IMAGE" .
+          echo "new_image=$NEW_IMAGE" >> "$GITHUB_OUTPUT"
 
-      # Checkout do repositório de K8s usando um PAT (Personal Access Token)
-      - name: Checkout do Repositório GitOps (K8s)
-        uses: actions/checkout@v4
+      # Verifica a imagem local ANTES de enviá-la ao ECR.
+      # exit-code: '1' bloqueia a publicação se forem encontradas
+      # vulnerabilidades HIGH/CRITICAL com correção disponível.
+      - name: Scan Docker Image with Trivy (Before Push)
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
-          repository: ${{ env.GITOPS_REPO }}
-          # Este PAT deve ser criado no GitHub e adicionado aos Secrets deste repositório
-          token: ${{ secrets.GITOPS_PAT }}
-          path: gitops-repo
+          scan-type: image
+          image-ref: ${{ steps.build-image.outputs.new_image }}
+          scanners: vuln
+          vuln-type: os,library
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
 
-      - name: Atualizar tag no deployment.yml via sed
-        env:
-          NEW_IMAGE: ${{ steps.build-image.outputs.new_image }}
-        run: |
-          cd gitops-repo
-          sed -i "s|image: ${{ env.REGISTRY_URL }}/${{ env.ECR_REPOSITORY }}:.*|image: $NEW_IMAGE|g" ${{ env.MANIFEST_PATH }}
+      # A partir daqui, os steps são exclusivos de push na main.
+      # OIDC obtém credenciais temporárias sem chave AWS persistente.
+      # - name: Authenticate to AWS (OIDC)
+      #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      #   uses: aws-actions/configure-aws-credentials@v6
+      #   with:
+      #     role-to-assume: arn:aws:iam::640494160208:role/github-actions-ecr-role-prod
+      #     aws-region: ${{ env.AWS_REGION }}
 
-      - name: Commit e Push para o repositório GitOps
-        run: |
-          cd gitops-repo
-          git config --global user.name "github-actions-bot"
-          git config --global user.email "bot@github.com"
-          git add ${{ env.MANIFEST_PATH }}
-          git commit -m "chore: deploy(auth-service) bump image to ${{ github.sha }}"
-          git pull --rebase origin main
-          for i in {1..5}; do
-            git pull --rebase origin main && git push origin main && break || sleep 5
-          done
+      # - name: Log In to Amazon ECR
+      #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      #   id: login-ecr
+      #   uses: aws-actions/amazon-ecr-login@v2
+
+      # - name: Push Approved Image to Amazon ECR
+      #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      #   env:
+      #     NEW_IMAGE: ${{ steps.build-image.outputs.new_image }}
+      #   run: docker push "$NEW_IMAGE"
+
+      # # Obtém o repositório de manifests para atualizar a tag da imagem.
+      # # É necessário configurar o secret GITOPS_PAT no repositório.
+      # - name: Checkout GitOps Repository (Kubernetes)
+      #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      #   uses: actions/checkout@v7
+      #   with:
+      #     repository: ${{ env.GITOPS_REPO }}
+      #     token: ${{ secrets.GITOPS_PAT }}
+      #     path: gitops-repo
+
+      # - name: Update Image Tag in deployment.yml
+      #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      #   env:
+      #     NEW_IMAGE: ${{ steps.build-image.outputs.new_image }}
+      #   run: |
+      #     cd gitops-repo
+      #     sed -i "s|image: ${{ env.REGISTRY_URL }}/${{ env.ECR_REPOSITORY }}:.*|image: $NEW_IMAGE|g" "${{ env.MANIFEST_PATH }}"
+
+      # # Registra a nova tag para que o controlador GitOps detecte
+      # # a alteração; evita commit vazio e tenta novamente em conflito.
+      # - name: Commit and Push GitOps Changes
+      #   if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      #   shell: bash
+      #   run: |
+      #     cd gitops-repo
+      #     git config user.name "github-actions-bot"
+      #     git config user.email "bot@github.com"
+      #     git add "${{ env.MANIFEST_PATH }}"
+
+      #     if git diff --cached --quiet; then
+      #       echo "Imagem já atualizada no manifesto; nenhum commit necessário."
+      #       exit 0
+      #     fi
+
+      #     git commit -m "chore: deploy(auth-service) bump image to ${{ github.sha }}"
+
+      #     for i in {1..5}; do
+      #       if git pull --rebase origin main && git push origin main; then
+      #         exit 0
+      #       fi
+      #       echo "Tentativa $i/5 falhou ao atualizar o repositório GitOps."
+      #       sleep 5
+      #     done
+
+      #     echo "Não foi possível atualizar o repositório GitOps."
+      #     exit 1
