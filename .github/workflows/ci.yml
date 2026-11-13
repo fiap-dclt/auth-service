@@ -95,17 +95,24 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Checkout Source Code
-        uses: actions/checkout@v7
+      # Instala a CLI do Horusec diretamente no runner do GitHub Actions.
+      - name: Install Horusec CLI
+        shell: bash
+        run: |
+          curl -fsSL \
+            https://github.com/ZupIT/horusec/releases/download/v2.8.0/horusec_linux_amd64 \
+            -o horusec
 
+          sudo install -m 755 horusec /usr/local/bin/horusec
+          horusec version
+          docker version
+
+      # Executa a análise SAST usando o Docker do próprio runner.
+      # O parâmetro -e true reprova o job se forem encontradas vulnerabilidades.
       - name: Run Horusec SAST Scan
         shell: bash
         run: |
-          docker run --rm \
-            -v /var/run/docker.sock:/var/run/docker.sock \
-            -v "$GITHUB_WORKSPACE:/src" \
-            horuszup/horusec-cli:v2.8.0 \
-            horusec start -p /src -P "$GITHUB_WORKSPACE" -e true
+          horusec start -p . -e true
 
   # ------------------------------------------------------------
   # Job 4 - Secret scanning (Gitleaks)
@@ -142,7 +149,7 @@ jobs:
   # Em push na main, publica no ECR e atualiza o manifesto GitOps.
   # ------------------------------------------------------------
   build-and-update-gitops:
-    name: Build, scan de imagem, ECR e GitOps
+    name: Build, image scan, ECR e GitOps
     needs:
       - lint
       - sca-trivy
