@@ -1,7 +1,7 @@
 # ==========================================
 # Stage 1: Build
 # ==========================================
-FROM golang:1.21-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 # Instalar dependências essenciais de sistema
 # ca-certificates: Para fazer requisições HTTPS externas (como autenticações em outros serviços)
