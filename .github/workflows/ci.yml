@@ -202,19 +202,31 @@ jobs:
       # A partir daqui, os steps são exclusivos de push na main.
       # OIDC obtém credenciais temporárias sem chave AWS persistente.
       - name: Authenticate to AWS (OIDC)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: >-
+          github.ref == 'refs/heads/main' &&
+          (github.event_name == 'push' ||
+          github.event_name == 'workflow_dispatch')
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: arn:aws:iam::640494160208:role/github-actions-ecr-role-prod
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log In to Amazon ECR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: >-
+          github.ref == 'refs/heads/main' &&
+          (github.event_name == 'push' ||
+          github.event_name == 'workflow_dispatch')
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Push Approved Image to Amazon ECR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: >-
+          github.ref == 'refs/heads/main' &&
+          (github.event_name == 'push' ||
+          github.event_name == 'workflow_dispatch')
         env:
           NEW_IMAGE: ${{ steps.build-image.outputs.new_image }}
         run: docker push "$NEW_IMAGE"
@@ -222,7 +234,11 @@ jobs:
       # Obtém o repositório de manifests para atualizar a tag da imagem.
       # É necessário configurar o secret GITOPS_PAT no repositório.
       - name: Checkout GitOps Repository (Kubernetes)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: >-
+          github.ref == 'refs/heads/main' &&
+          (github.event_name == 'push' ||
+          github.event_name == 'workflow_dispatch')
         uses: actions/checkout@v7
         with:
           repository: ${{ env.GITOPS_REPO }}
@@ -230,7 +246,11 @@ jobs:
           path: gitops-repo
 
       - name: Update Image Tag in deployment.yml
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: >-
+          github.ref == 'refs/heads/main' &&
+          (github.event_name == 'push' ||
+          github.event_name == 'workflow_dispatch')
         env:
           NEW_IMAGE: ${{ steps.build-image.outputs.new_image }}
         run: |
@@ -240,7 +260,11 @@ jobs:
       # Registra a nova tag para que o controlador GitOps detecte
       # a alteração; evita commit vazio e tenta novamente em conflito.
       - name: Commit and Push GitOps Changes
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        # if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: >-
+          github.ref == 'refs/heads/main' &&
+          (github.event_name == 'push' ||
+          github.event_name == 'workflow_dispatch')
         shell: bash
         run: |
           cd gitops-repo
