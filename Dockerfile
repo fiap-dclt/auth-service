@@ -24,6 +24,7 @@ RUN go mod download
 COPY handlers.go .
 COPY key.go .
 COPY main.go .
+COPY telemetry.go .
 
 # Compilar o binário
 # -ldflags="-s -w" remove símbolos de debug, reduzindo muito o tamanho final do binário
