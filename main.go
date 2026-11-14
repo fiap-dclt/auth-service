@@ -1,13 +1,14 @@
 package main
 
 import (
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
-	"time"
 	"context"
 	"database/sql"
 	"log"
 	"net/http"
 	"os"
+	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	_ "github.com/jackc/pgx/v4/stdlib"
 	"github.com/joho/godotenv"
@@ -23,14 +24,18 @@ func main() {
 	// Carrega o .env para desenvolvimento local. Em produção, isso não fará nada.
 	_ = godotenv.Load()
 
-    // Inicializa traces, métricas e logs com OTLP/HTTP para o Collector.
-    shutdownTelemetry, err := setupTelemetry(context.Background(), "auth-service")
-    if err != nil { log.Fatalf("Falha ao iniciar OpenTelemetry: %v", err) }
-    defer func() {
-        stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-        defer cancel()
-        if err := shutdownTelemetry(stopCtx); err != nil { log.Printf("Erro ao finalizar OpenTelemetry: %v", err) }
-    }()
+	// Inicializa traces, métricas e logs com OTLP/HTTP para o Collector.
+	shutdownTelemetry, err := setupTelemetry(context.Background(), "auth-service")
+	if err != nil {
+		log.Fatalf("Falha ao iniciar OpenTelemetry: %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTelemetry(stopCtx); err != nil {
+			log.Printf("Erro ao finalizar OpenTelemetry: %v", err)
+		}
+	}()
 
 	// --- Configuração ---
 	port := os.Getenv("PORT")
@@ -80,10 +85,10 @@ func main() {
 
 	log.Printf("Serviço de Autenticação (Go) rodando na porta %s", port)
 	if err := http.ListenAndServe(":"+port, otelhttp.NewHandler(
-        mux, "http.server", otelhttp.WithFilter(func(r *http.Request) bool {
-            return r.URL.Path != "/health"
-        }),
-    )); err != nil {
+		mux, "http.server", otelhttp.WithFilter(func(r *http.Request) bool {
+			return r.URL.Path != "/health"
+		}),
+	)); err != nil {
 		log.Fatal(err)
 	}
 }
